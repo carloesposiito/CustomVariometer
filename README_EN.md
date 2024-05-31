@@ -37,7 +37,7 @@ The libraries needed to control the sensor, display, and buzzer are:<br/>
 - Adafruit_BusIO;<br/>
 - Adafruit_GFX_Library;<br/>
 - Adafruit_Unified_Sensor;<br/>
-CuteBuzzerSounds;
+- CuteBuzzerSounds;
 
 
 They can be manually installed via the Arduino IDE, or automatically extracted into the `C:\\Users\\USER\\Documents\\Arduino\\libraries` folder by running the `CustomVariometer/libraries/libraries_CustomVariometer.exe` file.<br/>
