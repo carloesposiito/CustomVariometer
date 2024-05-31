@@ -241,9 +241,9 @@ void InitSensor()
                     Adafruit_BMP280::STANDBY_MS_500); // Standby time
 
     // Reference data
-    startingAltitude = bmp.readAltitude(SEA_PRESSURE_HPA);
-    previousAltitude = startingAltitude;
     referencePressure = (int)ceil(bmp.readPressure() / 100);
+    startingAltitude = USE_SEA_PRESSURE ? bmp.readAltitude(SEA_PRESSURE_HPA) : bmp.readAltitude(referencePressure);
+    previousAltitude = startingAltitude;
 
     // Connected
     if (DEBUG)
