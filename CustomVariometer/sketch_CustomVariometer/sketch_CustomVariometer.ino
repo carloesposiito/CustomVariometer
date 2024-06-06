@@ -1,7 +1,3 @@
-/***************************************************************************
-  By Carlo Esposito, 2024, Github: @carloesposiito
- ***************************************************************************/
-
 #pragma region "INCLUDES"
 
 #include <Wire.h>
@@ -14,42 +10,42 @@
 #pragma endregion
 
 /***************************************************************************
- *                        START EDITABLE PARAMETERS                           
+  By Carlo Esposito, 2024, Github: @carloesposiito
  ***************************************************************************/
 
-bool const DEBUG = false;
-
-// Interval of sensor detection
-int const MS_DETECTION_INTERVAL = 1000;
+/***************************************************************************
+ *                        START EDITABLE PARAMETERS                           
+ ***************************************************************************/
 
 // Enable/disable display output
 bool const USE_DISPLAY = true;
 
-// Enable battery check
-int const BATTERY_CHECK = false;
-const int BATTERY_PIN = 2;
+// Enable/disable low battery check
+int const LOW_BATTERY_CHECK = false;
 
-// If true program will calculate altitude using SEA_PRESSURE_HPA value.
-// [REMEMBER: A more accurate SEA_PRESSURE_HPA (of the local forecast) value gives more accurate readings!]
-// Otherwise it will calculate altitude using the pressure value detected while starting.
-bool const USE_SEA_PRESSURE = false;
-int const SEA_PRESSURE_HPA = 1006;
+// REFERENCE PRESSURE
+// A reference pressure is needed to calculate altitude, then there are 3 ways:
+// 1. Using default pressure (1013.25 hPa) as reference;
+// 2. Using relative pressure as reference, detected when variometer starts (set to true to enable);
+bool const USE_RELATIVE_PRESSURE = false; 
+// 3. Using custom pressure: in this case please insert sea pressure value according to your local forecast.
+// A more accurate CUSTOM_PRESSURE_HPA value gives more accurate readings! (set to true to enable and adjust value as preferred);
+bool const USE_CUSTOM_PRESSURE = false;
+float const CUSTOM_PRESSURE_HPA = 1013.25;
 
 // Speed variation in m/s while going up that triggers alarm.
-// Select a value from array (0 = 0.1, 1 = 0.2, ...)
-float sensibilities[] = {0.1, 0.2, 0.3, 0.4, 0.5};
-const int SENSIBILITY = 2;
+float liftAlarm = 0.3;
 
 // Speed variation in m/s while going down that triggers alarm.
-// Select a value from array (0 = -0.5, 1 = -1, ...)
-float sinkAlarms[] = {-0.5, -1, -1.5, -2, -3};
-const int SINK_ALARM = 3;
+float sinkAlarm = -2;
 
 /***************************************************************************
  *                           END EDITABLE PARAMETERS                           
  ***************************************************************************/
 
-#pragma region "GLOBAL SCOPE"
+#pragma region "Variables"
+
+bool const DEBUG = true;
 
 // BMP280 parameters for SPI on ESP32 Super Mini
 #define BMP_SCK 4
@@ -62,33 +58,33 @@ Adafruit_BMP280 bmp(BMP_CS, BMP_MOSI, BMP_MISO,  BMP_SCK);
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT);
-bool displayWorking;
+bool displayWorking = false;
 int const BOOT_LOGO_DURATION = 2500;
 
 // Buzzer
 int const BUZZER = 3;
-int const TONE_OK = 300;
-int const TONE_FAILED = 700;
 
 // Sensor interval detection variables
+int const MS_DETECTION_INTERVAL = 1000;
 unsigned long currentMillis = 0;
 unsigned long previousDetectionMillis = 0;
 
 // Battery interval detection variabels
-const int MS_BATTERY_CHECK_INTERVAL = 10000;
+int const MS_BATTERY_CHECK_INTERVAL = 10000;
 unsigned long previousBatteryMillis = 0;
 
 // Altitude
 float startingAltitude = 0;
 float previousAltitude = 0;
-int referencePressure = 0;
+float referencePressure = 0;
 
 // Temperature
 int currentTemperature = 0;
 
-#pragma endregion
+// Battery
+const int BATTERY_PIN = 2;
 
-#pragma region "IMAGES"
+#pragma region "Images"
 
 const unsigned char BOOT_LOGO [] PROGMEM = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
@@ -226,9 +222,12 @@ const unsigned char MAIN_SCREEN [] PROGMEM = {
 
 #pragma endregion
 
-#pragma region "BMP280 FUNCTIONS"
+#pragma endregion
 
-/// @brief Initializes sensor and writes result on serial.
+#pragma region "Functions"
+
+#pragma region "BMP280"
+
 void InitSensor()
 {
   if (bmp.begin())
@@ -240,15 +239,32 @@ void InitSensor()
                     Adafruit_BMP280::FILTER_X16,      // Filtering
                     Adafruit_BMP280::STANDBY_MS_500); // Standby time
 
-    // Reference data
-    referencePressure = (int)ceil(bmp.readPressure() / 100);
-    startingAltitude = USE_SEA_PRESSURE ? bmp.readAltitude(SEA_PRESSURE_HPA) : bmp.readAltitude(referencePressure);
+    // Reference pressure
+    String choice;
+    if (USE_RELATIVE_PRESSURE && !USE_CUSTOM_PRESSURE)
+    {
+      referencePressure = (bmp.readPressure() / 100);
+      choice = "relative";
+    }
+    else if (!USE_RELATIVE_PRESSURE && USE_CUSTOM_PRESSURE)
+    {
+      referencePressure = CUSTOM_PRESSURE_HPA;
+      choice = "custom";
+    }
+    else
+    {
+      referencePressure = 1013.25;
+      choice = "default";
+    }
+
+    startingAltitude = bmp.readAltitude(referencePressure);
     previousAltitude = startingAltitude;
 
     // Connected
     if (DEBUG)
     {
       Serial.println("Sensor initialized!");
+      Serial.println("Using " + choice + " reference pressure: " + (String)referencePressure + " hPa");
       Serial.println("");
     }
     cute.play(S_CONNECTION);
@@ -274,7 +290,7 @@ void ReadSensor()
     previousDetectionMillis = currentMillis;
 
     // Calculate altitude data
-    float currentAltitude = USE_SEA_PRESSURE ? bmp.readAltitude(SEA_PRESSURE_HPA) : bmp.readAltitude(referencePressure);
+    float currentAltitude = bmp.readAltitude(referencePressure);
     float relativeAltitude = currentAltitude - startingAltitude;
     float altitudeVariation_meters = currentAltitude - previousAltitude;
     float altitudeVariation_speed = altitudeVariation_meters  * (1000 / MS_DETECTION_INTERVAL);
@@ -292,23 +308,21 @@ void ReadSensor()
       Serial.println("");
     }
 
-    if (displayWorking) DisplayData((String)currentAltitude, (String)relativeAltitude, (String)altitudeVariation_speed, (String)currentTemperature);
+    DisplayData((String)currentAltitude, (String)relativeAltitude, (String)altitudeVariation_speed, (String)currentTemperature);
     
     // Lift beep beep
-    if (altitudeVariation_speed >= sensibilities[SENSIBILITY]) cute.play(S_MODE1);
+    if (altitudeVariation_speed >= liftAlarm) cute.play(S_MODE1);
 
     // Sink beep
-    if (altitudeVariation_speed <= sinkAlarms[SINK_ALARM]) cute.play(S_FART1);    
+    if (altitudeVariation_speed <= sinkAlarm) cute.play(S_FART1);    
   }
 }
 
 #pragma endregion
 
-#pragma region "DISPLAY FUNCTIONS"
+#pragma region "DISPLAY"
 
-/// @brief Initialized OLED display.
-/// @return True if initializing success, otherwise false.
-bool InitDisplay()
+void InitDisplay()
 {
   if (display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
   {
@@ -319,27 +333,29 @@ bool InitDisplay()
     display.drawBitmap(0, 0, BOOT_LOGO, SCREEN_WIDTH, SCREEN_HEIGHT, WHITE);
     display.display();
 
-    if (DEBUG) Serial.println("Display initialized!");
-    return true;
+    displayWorking = true;
+    Serial.println("Display initialized!");
   }
   else
   {
-    if (DEBUG) Serial.println("Display not initialized!");
-    return false;
-  }  
+    displayWorking = false;
+    Serial.println("Display not initialized!");
+  } 
 }
 
-/// @brief Shows passed values one the OLED display.
 void DisplayData(String absAlt, String relAlt, String variationSpeed, String temp) 
 {
-  WriteAltitude(absAlt, relAlt);
-  WriteTemp(temp);
-  WriteSpeed(variationSpeed);
+  if (displayWorking)
+  {
+    WriteAltitude(absAlt, relAlt);
+    WriteTemp(temp);
+    WriteSpeed(variationSpeed);
+  }
 }
 
 void WriteAltitude(String absAlt, String relAlt)
 {
-  // Clean temp zone
+  // Clean altitude zone
   display.fillRect(44, 10, 80, 27, SSD1306_BLACK);
   display.display();
 
@@ -364,7 +380,7 @@ void WriteTemp(String temp)
   display.fillRect(104, 48, 10, 5, SSD1306_BLACK);
   display.display();
 
-  // Write text
+  // Write temp
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.setCursor(104, 48);
@@ -374,11 +390,11 @@ void WriteTemp(String temp)
 
 void WriteSpeed(String varSpeed)
 {
-  // Clean temp zone
+  // Clean speed zone
   display.fillRect(36, 48, 40, 10, SSD1306_BLACK);
   display.display();
 
-  // Write text
+  // Write speed
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.setCursor(36, 48);
@@ -388,11 +404,11 @@ void WriteSpeed(String varSpeed)
 
 #pragma endregion
 
-#pragma region "BATTERY FUNCTIONS"
+#pragma region "BATTERY"
 
 void CheckBatteryVoltage()
 {
-  if (BATTERY_CHECK)
+  if (LOW_BATTERY_CHECK)
   {
     if (currentMillis - previousBatteryMillis >= MS_BATTERY_CHECK_INTERVAL)
     {
@@ -413,12 +429,14 @@ void CheckBatteryVoltage()
         
       if (DEBUG)
       {
-        Serial.println("Battery voltage = " + (String)batteryVoltageSensor + "V");
+        Serial.println("Low battery: " + (String)batteryVoltageSensor + "V");
         Serial.println("");
       } 
     }
   }
 }
+
+#pragma endregion
 
 #pragma endregion
 
@@ -428,15 +446,18 @@ void setup()
   {
     Serial.begin(9600);
     Serial.println("Variometer starting... ");
-    Serial.println("");
   }
 
   // Init sound library
   cute.init(BUZZER);
 
   // Initialize display
-  displayWorking = USE_DISPLAY ? InitDisplay() : false;
+  if (USE_DISPLAY)
+  {
+    InitDisplay();
+  } 
 
+  // Initialize BMP280 sensor
   InitSensor(); 
 
   if (displayWorking)
@@ -444,7 +465,7 @@ void setup()
     delay(BOOT_LOGO_DURATION);
     display.clearDisplay();
     
-    // Draw boot logo
+    // Draw main screen page
     display.drawBitmap(0, 0, MAIN_SCREEN, SCREEN_WIDTH, SCREEN_HEIGHT, WHITE);
     display.display();
   }
@@ -453,4 +474,5 @@ void setup()
 void loop()
 {
   ReadSensor();  
+  CheckBatteryVoltage();
 }
